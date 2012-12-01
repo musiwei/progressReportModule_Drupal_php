@@ -1,0 +1,310 @@
+<?php
+// $Id$
+/**
+* @file
+* Lets users view the progress report
+* Lets administrators administer related operations such as create, update and delete.
+*/
+function progress_report_menu() {
+  $items['crm/project/view'] = array(
+    'page callback' => 'project_list_page',
+    'access callback' => 'user_access',
+    'access arguments' => array('View project and progress report for certain project'),
+    'title' => 'My Project',
+  );
+  $items['crm/project/%/progress_report/view'] = array(
+    'page callback' => 'progress_report_list_page',
+    'page arguments' => array(2),
+    'access callback' => 'user_access',
+    'access arguments' => array('View project and progress report for certain project'),
+    'title' => 'Progress report',
+  );
+  return $items;
+}
+
+/**
+ * Implements hook_node_prepare().
+ * 
+ * Finish the database reading as to update the form before rendering progress report node page
+ */
+function progress_report_node_prepare($node) {
+    //print("<pre>".print_r($node,true)."</pre>");
+    if ($node->type == 'progress_report') {
+      $sql = 'SELECT nid, title FROM {node} n WHERE n.type = :type AND n.status = :status ORDER BY n.nid DESC';
+      $result = db_query($sql,
+        array(
+          ':type' => 'project',
+          ':status' => 0,
+        )
+      );
+     $options = array();
+     foreach($result as $record)
+     {
+        $options[$record->nid] = t($record->title);
+     }
+     $field['field_name'] = 'progress_report_pid';
+     $field['settings']['allowed_values'] = $options;
+     field_update_field($field);
+  }
+}
+
+function progress_report_list_page($projectId){
+    $pids = _file_manager_available_project_for_current_user(); // Get the available project ID list
+    $allow = FALSE; // If it's allowed to get access as to view the progress report
+    foreach($pids as $pid){
+      if($projectId == $pid->entity_id){ // If there is one match, access permission is approved
+          $allow = TRUE;
+      }
+    }
+    global $user;
+    if(!in_array('administrator',$user ->roles)){ // if user is not the administrator role
+        if(!$allow ){ // If not approved, deny any access
+          return drupal_access_denied();
+        }
+    }
+    // We'll start building a renderable array that will be our page.
+    // For now we just declare the array.
+    $renderable_array = array();
+    // We query the database and find all of the published nodes for the type and specified project ID we defined.
+    $sql = 'SELECT nid, title FROM {node} n JOIN {field_data_progress_report_pid} f ON n.nid = f.entity_id WHERE n.type = :type AND n.status = :status AND f.progress_report_pid_value = :pid ORDER BY n.changed DESC';
+    $result = db_query($sql,
+    array(
+      ':pid' => $projectId,
+      ':type' => 'progress_report',
+      ':status' => 1,
+    )
+    );
+    // Display message if no result
+    if($result->rowCount() == 0){
+      return "<div>There is not progress report record. Contact with administrator for more information.</div>";
+    }
+    // Get project name by project ID
+    $query2 = db_select('node', 'n');
+    $query2
+    ->condition('n.nid', $projectId, '=')
+    ->fields('n', array('title'));
+    $result2 = $query2->execute();
+    foreach($result2 as $record){
+      $title = $record->title;
+    }
+    $renderable_array['explanation'] = array(
+    '#markup' => t("Progress report list for '" . $title . '\'. Sorted by updated time.</br></br>'),
+    );
+    // Loop through each of our progress_report nodes and instruct node_view
+    // to use our "progress_report_list" view.
+    $result2 = _progress_report_available_progress_report_for_project($projectId);
+
+    if($result2 == NULL){
+      return "<div>There is not project record. Contact with administrator for more information.</div>";
+    }
+
+    foreach ($result as $row) {
+        $node = node_load($row->nid);
+        $renderable_array['node_list'][]= node_view($node, 'progress_report_list');
+    }  
+    return $renderable_array;
+}
+
+// merged user interface and administrator interface together into this page
+function project_list_page(){
+    /*$scheme_options = array();
+    foreach (file_get_stream_wrappers(STREAM_WRAPPERS_WRITE_VISIBLE) as $scheme => $stream_wrapper) {
+    $scheme_options[$scheme] = $stream_wrapper['name'];
+    }
+    print("<pre>".print_r($scheme_options,true)."</pre></br></br></br>");
+    $field_types = field_info_field_types();
+    print("<pre>".print_r($field_types,true)."</pre></br></br></br>");
+    $widget_types = field_info_widget_types();
+    print("<pre>".print_r($widget_types,true)."</pre>");*/
+    global $user;
+    $result = NULL;
+    if(!in_array('administrator',$user ->roles)){
+        // Query1 as to get the project id
+        $query = db_select('users', 'u');
+        $query->join('field_data_project_related_user', 'f', 'u.name = f.project_related_user_value');
+        $query
+        ->condition('u.uid', $user->uid, '=')
+        ->fields('f', array('entity_id'));
+        $result = $query->execute();
+        $entity_id = $result->fetchCol();
+    }else{
+        // query1 as to get the project id
+        $query = db_select('users', 'u');
+        $query->join('field_data_project_related_user', 'f', 'u.name = f.project_related_user_value');
+        $query
+        ->fields('f', array('entity_id'));
+        $result = $query->execute();
+        $entity_id = $result->fetchCol();
+    }
+    // Display message if no result
+    if($result->rowCount() == 0){
+        return "<div>There is not project record. Contact with administrator for more information.</div>";
+    }
+  
+    // Output the results in a table with a header.
+    $header = array(
+        // The header gives the table the information it needs in order to make
+        // the query calls for ordering. TableSort uses the field information
+        // to know what database column to sort by.
+        array('data' => t('ID'), 'field' => 'n.nid'),
+        array('data' => t('Name'), 'field' => 'n.title'),
+        array('data' => t('Description'), 'field' => 'd.project_description_value'),
+        array('data' => t('Dev phase'), 'field' => 'p.project_dev_phase_value'),
+        array('data' => t('Created'), 'field' => 'n.created'),
+        // the comment below shows the timestamp that indicate the updated time of the project. Activate it and the comments with '#updated time' when necessary
+        //array('data' => t('Last modified'), 'field' => 'n.changed'),
+        array('data' => t('Administered by'), 'field' => 'u.name'),
+        array('data' => t('Progress report'), 'field' => 'view'),
+        array('data' => t('Resource'), 'field' => 'resource'),
+    );
+    if(in_array('administrator',$user ->roles)){
+        $header[] =  array('data' => t('Edit'), 'field' => 'edit');
+        $header[] =  array('data' => t('Delete'), 'field' => 'delete'); 
+    }
+
+    $query2 = db_select('node', 'n')
+          ->extend('TableSort'); // Using the TableSort Extender is what tells the
+                                 // the query object that we are sorting.
+    $query2->join('field_data_project_description', 'd', 'n.nid = d.entity_id');
+    $query2->join('field_data_project_dev_phase', 'p', 'n.nid = p.entity_id');
+    $query2->join('users', 'u', 'n.uid = u.uid');
+    $query2
+    ->condition('n.nid', $entity_id, 'IN')
+    ->fields('n', array('nid', 'title'))
+    ->fields('d', array('project_description_value'))
+    ->fields('p', array('project_dev_phase_value'))
+    // #updated time, see comments above
+    ->fields('n', array('created', /*'changed'*/))
+    ->fields('u', array('name'));
+    $result2 = $query2
+    ->orderByHeader($header) // tell the query object how to
+                             // find the header information.
+    ->execute();
+
+  $rows = array();
+  foreach ($result2 as $row) {
+    development_phase_style_implementation($row);
+    $row->created = format_date($row->created, 'custom', "m/d/Y H:i");
+    // #updated time, see comments above
+    //$row->changed = format_date($row->changed, 'custom', "H:i:s d-M-Y");
+    $row->view = '<a href="'. $row->nid .'/progress_report/view">View</a>';
+    $row->resource = '<a href="'. $row->nid .'/resource/view">View</a>';
+    if(in_array('administrator',$user ->roles)){
+        $row->edit = '<a href="view#overlay=node/' . $row->nid . '/edit%3Fdestination%3Dadmin/content">Edit</a>';
+        $row->delete = '<a href="view#overlay=node/' . $row->nid . '/delete%3Fdestination%3Dadmin/content">Delete</a>';
+    }
+    $rows[] = array('data' => (array) $row);
+  }
+
+  // Build the table for the output.
+  $build['tablesort_table'] = array(
+    '#theme' => 'table',
+    '#header' => $header,
+    '#rows' => $rows,
+    '#empty' => t('No records found'),
+  );
+
+  return $build;
+}
+
+/**
+ * Implements hook_node_access().
+ * 
+ * Forbidden not related user viewing the progress report.
+ */
+function progress_report_node_access($node, $op, $account) {
+  if (is_string($node)) {
+    return NODE_ACCESS_IGNORE;
+  }
+  if($op == 'view' && $node->type == 'progress_report'){
+        $result = available_progress_report_for_current_user();
+        
+        $isAllowed = FALSE; 
+        if(!empty($result) && $result != NULL && $result->rowCount() != 0){
+            foreach($result as $available_progress_report_id){
+                if($node->nid == $available_progress_report_id->entity_id)
+                        $isAllowed = TRUE;
+            }
+        }
+        
+        if($isAllowed){
+            drupal_set_message(t('User @user requests accessing to node @nid allowed.', array('@user' => $account->name, '@nid' => $node->nid)));
+            return NODE_ACCESS_ALLOW;// always be careful when granting a NODE_ACCESS_ALLOW permission.
+        } else
+            return NODE_ACCESS_DENY;// deny any access to progress_report node if user is not in the allowed list.
+  }
+} 
+
+// Query for the progress report id which are allowed to be viewed by current user.
+function available_progress_report_for_current_user(){
+  global $user;
+  // In case an anonymour user is logging.
+  if (empty($user->name)){
+      return NULL;
+  }
+  // Query 1 get current user owned project ID
+  $query = db_select('field_data_project_related_user', 'u');
+  $query
+  ->condition('u.project_related_user_value', $user->name, '=')
+  ->fields('u', array('entity_id'));
+  $result = $query->execute();
+  $entity_id = $result->fetchCol();
+  
+  $result2 = NULL;
+  
+  if($result->rowCount() != 0){
+      // Query 2 based on query 1, search for the progress reports for the particular projects.
+      $query2 = db_select('field_data_progress_report_pid', 'p');
+      $query2
+      ->condition('p.progress_report_pid_value', $entity_id, 'IN')
+      ->fields('p', array('entity_id'));
+      $result2 = $query2->execute();
+  }
+  return $result2;
+}
+
+// Query for the project id which are allowed to be viewed by current user.
+function available_project_for_current_user(){
+  global $user;
+  // Query 1 get current user owned project ID
+  $query = db_select('field_data_project_related_user', 'u');
+  $query
+  ->condition('u.project_related_user_value', $user->name, '=')
+  ->fields('u', array('entity_id'));
+  $result = $query->execute();
+  
+  return $result;
+}
+
+function _progress_report_available_progress_report_for_project($projectId){
+  $query = db_select('field_data_progress_report_pid', 'p');
+  $query
+  ->condition('p.progress_report_pid_value', $projectId, '=')
+  ->fields('p', array('entity_id'));
+  $result = $query->execute();
+  
+  return $result;
+}
+
+// Changes the font color of the 'development phase' in the table.
+function development_phase_style_implementation( &$record ){
+    switch($record ->project_dev_phase_value){ // substitute the number by meaningful word.
+        case 0: $record ->project_dev_phase_value = '<font color=red>Pending</font>';break;
+        case 1: $record ->project_dev_phase_value = '<font color=green>Developing</font>';break;
+        case 2: $record ->project_dev_phase_value = '<font color=green>Final test</font>';break;
+        case 3: $record ->project_dev_phase_value = '<font color=black>Completed</font>';break;
+    }
+}
+
+/**
+ * Implements hook_node_permission().
+ * 
+ * @return type 
+ */
+function progress_report_permission() {
+  return array(
+    'View project and progress report for certain project' => array(
+      'title' => t('View project and progress report for certain project.'), 
+    ),
+  );
+}

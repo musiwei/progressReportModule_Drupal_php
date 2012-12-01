@@ -1,0 +1,470 @@
+<?php
+// $Id$
+/**
+* @file
+* Add restriction to books
+* Lets users view the project's books (documents).
+* Lets administrators administer related operations such as create, update and delete.
+*/
+
+/**
+ * Implements hook_form_FORM_ID_alter() for the node form.
+ *
+ * Adds two fields to the node form, second only appears after first is enabled.
+ */
+function book_restriction_form_node_form_alter(&$form, &$form_state, $form_id) {
+    $node = $form['#node'];
+    $options = get_project_id_name_pair_list();
+    
+    // When adding the node.
+    if(empty($node->book_access['restricted'])){
+        $form['status'] = array(
+            '#weight' => -4.5,
+            '#prefix' => '<div id="restriction_status">',//. get_restriction_status(), // new node is not restricted yet, display message in green
+            '#suffix' => '</div>',
+          );
+    }else{// When editing the node.
+        $form['status'] = array(
+            '#weight' => -4.5,
+            '#prefix' => '<div id="restriction_status">',//. get_restriction_status(TRUE), // if is restricted, display message in red
+            '#suffix' => '</div>',
+          );
+    }
+    
+    $form['restriction'] = array(
+        '#type' => 'fieldset',
+        '#title' => t('Book restriction settings'),
+        '#weight' => 11,
+        '#collapsible' => TRUE,
+        '#collapsed' => TRUE,
+        '#group' => 'additional_settings',
+        '#attributes' => array(
+          'class' => array('restriction-form'),
+        ),
+        '#tree' => TRUE,
+    );
+    
+    $form['restriction']['restrict_option'] = array(
+        '#title' => t('Restrict access'),
+        '#description' => t('Restrict access of this book to particular project related users. Once restricted any page in a certain book, the entire book will become accessable only to the related users.'),
+        '#type' => 'checkbox',
+        '#default_value' => empty($form_state['values']['restriction']['restrict_option']) ?
+                          $node->book_access['restricted'] :
+                          $form_state['values']['restriction']['restrict_option'],
+         '#ajax' => array(
+         'callback' => 'book_restriction_form_node_callback',
+         'wrapper' => 'progress-report-book-attaching-form-node',
+         'effect' => 'fade',
+        ),
+         '#prefix' => '<div id="restriction_checkbox">',
+         '#suffix' => '</div>',
+    );
+     // overwrite system module - book module's ajax callback by our function, which keeps 
+     // the original callback codes and implements the new function we need.
+     $form['book']['bid']['#ajax']['callback'] = 'book_restriction_form_update';
+     
+     $form['restriction']['container'] = array(
+        '#prefix' => '<div id="progress-report-book-attaching-form-node">',
+        '#suffix' => '</div>',
+      );
+          
+     $form['restriction']['reminder'] = array(
+        '#prefix' => '<div id="progress-report-book-attaching-form-reminder">',
+        '#suffix' => '</div>',
+      );
+     // Set condition for displaying the form below
+     $isRestricted = FALSE;
+    if(!empty($form_state['values']['book']['bid'])){
+        $isRestricted = isRestrictedBook($form_state['values']['book']['bid']);
+    }
+    // If the state values exist and 'restrict_option' state value is 1 or
+    // if the state values don't exist and 'restricted' variable is 1 then
+    // display the project_id field.
+    if (!empty($form_state['values']['restriction']['restrict_option']) && $form_state['values']['restriction']['restrict_option'] == 1
+        || empty($form_state['values']) && $node->book_access['restricted'] 
+        || $isRestricted) {// condition "$form['restriction']['restrict_option']['#checked']" is for when modifying the restriction option of a certain node, uncheck restriction checkbox will still hide the project selection dropdown list.
+        $form['restriction']['container']['project_id'] = array(
+            '#title' => t('Restricted to'),
+            '#type' => 'select',
+            '#options' => $options,
+            '#default_value' => empty($form_state['values']['restriction']['container']['project_id']) ?
+                          $node->book_access['pid'] :
+                          $form_state['values']['restriction']['container']['project_id'],
+        );
+    }
+}
+
+/**
+ * Returns changed part of the form.
+ *
+ * @return renderable array
+ *
+ * @see book_restriction_form_node_form_alter()
+ */
+function book_restriction_form_node_callback($form, $form_state) {
+    $node = $form['#node'];
+    $isRestricted = FALSE;
+    if(!empty($form_state['values']['book']['bid'])){
+        $isRestricted = isRestrictedBook($form_state['values']['book']['bid']);
+    }
+    $commands[] = ajax_command_html("#progress-report-book-attaching-form-node", render($form['restriction']['container']));
+    if($form_state['values']['restriction']['restrict_option'] == 1){
+        $commands[] = ajax_command_html("#restriction_status", get_restriction_status(TRUE));
+        $commands[] = ajax_command_html("#progress-report-book-attaching-form-reminder", get_restriction_reminder(TRUE));
+    } else{
+        $commands[] = ajax_command_html("#restriction_status", get_restriction_status());
+        if($isRestricted){
+            $commands[] = ajax_command_html("#progress-report-book-attaching-form-reminder", get_restriction_reminder());
+        }else
+            $commands[] = ajax_command_html("#progress-report-book-attaching-form-reminder", "");
+    }
+    return array('#type' => 'ajax', '#commands' => $commands);
+    return $form['restriction']['container'];
+}
+
+/**
+ * Renders a new parent page select element and changes the other menu display
+ * when the book selection changes.
+ *
+ * This function is called via Ajax when the selected book is changed on a node
+ * or book outline form.
+ *
+ * @return
+ *   The rendered parent page select element.
+ */
+function book_restriction_form_update($form, $form_state) {
+    $node = $form['#node'];
+    $options = get_project_id_name_pair_list();
+    $commands = array();
+    $isRestricted = isRestrictedBook($form_state['values']['book']['bid']);
+    if($isRestricted){
+        // check the checkbox if current selected book is restricted to a certain project
+        $form['restriction']['restrict_option']['#checked'] = TRUE;
+        // set the project as the concrete restricted project
+        $form['restriction']['container']['project_id']['#value'] = t(get_project_id_for_particular_restricted_book($form_state['values']['book']['bid']));
+        // store the value of project id as concrete restricted project id
+        //$form_state['values']['restriction']['container']['project_id'] = get_project_id_for_particular_restricted_book($form_state['values']['book']['bid']);
+        
+        $commands[] = ajax_command_html("#edit-book-plid-wrapper", render($form['book']['plid']));
+        $commands[] = ajax_command_html("#restriction_checkbox", render($form['restriction']['restrict_option']));
+        $commands[] = ajax_command_html("#progress-report-book-attaching-form-node", render($form['restriction']['container']));
+        $commands[] = ajax_command_html("#restriction_status", get_restriction_status(TRUE));
+        $commands[] = ajax_command_html("#progress-report-book-attaching-form-reminder", get_restriction_reminder(TRUE));
+    }else{
+        // uncheck the checkbox since current selected book is NOT restricted to a certain project
+        unset($form['restriction']['restrict_option']['#checked']);
+        
+        $commands[] = ajax_command_html("#edit-book-plid-wrapper", render($form['book']['plid']));
+        $commands[] = ajax_command_html("#restriction_checkbox", render($form['restriction']['restrict_option']));
+        $commands[] = ajax_command_html("#progress-report-book-attaching-form-node", hide($form['restriction']['container']));// hide the div as to hide the dropdown box
+        $commands[] = ajax_command_html("#restriction_status", get_restriction_status());
+        $commands[] = ajax_command_html("#progress-report-book-attaching-form-reminder", "");
+    }
+    return array('#type' => 'ajax', '#commands' => $commands);
+}
+
+/**
+ * Implements hook_node_submit().
+ * @see book_restriction_form_node_form_alter()
+ */
+function book_restriction_node_submit($node, $form, &$form_state) {
+        //drupal_set_message(t('Submitting values: @values', array('@values' => var_export($form_state['values'], TRUE))));// very useful debuging tool, show the form array result each time the node is modified.
+        $values = $form_state['values'];
+        // Move the new data into the node object.
+        $node->book_access['restricted'] = $values['restriction']['restrict_option'];
+        // Depending on the state of restrict_option; it may not exist.
+        $node->book_access['pid'] = isset($values['restriction']['container']['project_id']) ? $values['restriction']['container']['project_id'] : '0';
+}
+
+/**
+ * Implements hook_node_prepare().
+ *
+ * @see book_restriction_form_node_form_alter()
+ * 
+ * Default node attributes.
+ */
+function book_restriction_node_prepare($node) {
+        if (empty($node->book_access)) {
+        // Set default values, since this only runs when adding a new node.
+        $node->book_access['restricted'] = 0;
+        $node->book_access['pid'] = 0;
+      }
+}
+
+/**
+ * Implements hook_node_load().
+ *
+ * @see book_restriction_form_node_form_alter()
+ * 
+ * To be called when loading up the nodes to display
+ */
+function book_restriction_node_load($nodes, $types) {
+        $result0 = db_query('SELECT * FROM {book} WHERE nid IN(:nids)', array(':nids' => array_keys($nodes)))->fetchAllAssoc('nid');
+
+        foreach ($nodes as &$node) {
+            $top_level_page_id = get_top_level_page_id_for_paticular_book_page($node->nid);
+            $result = db_query('SELECT * FROM {book_access} WHERE nid =(:nids)', array(':nids' => $top_level_page_id))->fetchAllAssoc('nid');
+            $node->book_access['restricted'] = isset($result[$top_level_page_id]->restricted) ?
+                                               $result[$top_level_page_id]->restricted : 0;
+            $node->book_access['pid'] = isset($result[$top_level_page_id]->pid) ?
+                                               $result[$top_level_page_id]->pid : 0;
+    }
+}
+
+/**
+ * Implements hook_node_insert().
+ *
+ * @see book_restriction_form_node_form_alter()
+ * 
+ * In the adding new book page node page, this function will be used to update node information.
+ */
+function book_restriction_node_insert($node) {
+        // If 'restricted' is not checked, doesn't add new record into book_access table
+        if($node->book_access['restricted'] =='1'){
+            $result = db_select('book_access', 'a')
+            ->condition('a.nid', get_top_level_page_id_for_paticular_book_page($node->nid), '=')
+            ->condition('a.pid', $node->book_access['pid'], '=')
+            ->fields('a')
+            ->execute();
+            // insert new record only if there doesn't have dupalicate one.
+            if($result->rowCount() == 0){
+                db_insert('book_access')
+                ->fields(array(
+                  'nid' => get_top_level_page_id_for_paticular_book_page($node->nid),
+                  'restricted' => $node->book_access['restricted'],
+                  'pid' => $node->book_access['pid'],
+                ))
+                ->execute();
+            }
+
+        } else if($node->book_access['restricted'] =='0'){// this condition is very important, when a new book page is being added.
+                                                          // user can assign it to a particular book. If the book is restricted, 
+                                                          // the restriction_option checkbox in another menu will automatically 
+                                                          // checked by ajax function. However if user unchecks the checkbox, which 
+                                                          // means he wants to terminate the restriction of the particular book, 
+                                                          // then this condition shall be met, book restriction deletion
+                                                          // will be excuted.
+            book_restriction_node_delete($node);
+        }
+}
+
+/**
+ * Implements hook_node_update().
+ * @see book_restriction_form_node_form_alter()
+ * 
+ * This hook is invoked from node_save() after the node is updated in the node table in the database
+ * This function will be used to update node information.
+ */
+function book_restriction_node_update($node) {
+        // If restricted status is 0, which means the restriction option has been set off, then delete the restriction record in database table immediately
+        if ($node->book_access['restricted'] == 0){
+            book_restriction_node_delete($node);
+        }else if (db_select('book_access', 'a')->fields('a')->condition('nid', get_top_level_page_id_for_paticular_book_page($node->nid), '=')->execute()->fetchAssoc()) {
+        db_update('book_access')
+          ->fields(array(
+            'restricted' => $node->book_access['restricted'],
+            'pid' => $node->book_access['pid'],
+          ))
+          ->condition('nid', get_top_level_page_id_for_paticular_book_page($node->nid))
+          ->execute();
+      }
+      else {
+        // Cleaner than doing it again.
+        book_restriction_node_insert($node);
+      }
+}
+
+/**
+ * Implements hook_node_delete().
+ * @see book_restriction_form_node_form_alter()
+ * 
+ * Delete the restriction record.
+ */
+function book_restriction_node_delete($node) {
+        db_delete('book_access')
+        ->condition('nid', get_top_level_page_id_for_paticular_book_page($node->nid))
+        ->execute();
+        // the followings are to implement the delete function when deleting a top level page of a book which represents the book itself both in book module and our module
+        // the reason for separate which from the deletion above is due to the book module deletes the top level page id already which causes function
+        // get_top_level_page_id_for_paticular_book_page() won't be able to get the particular id.
+        $result = get_restricted_book_list();
+        $isTopLevelPage = FALSE;
+        foreach($result as $restricted_top_level_page_id){
+            if($restricted_top_level_page_id->nid == $node->nid)
+                $isTopLevelPage = TRUE;
+        }
+        if($isTopLevelPage){// This condition will meet if you are deleting a top level page of a book 
+                            // since which will cause the whole book structure dismissed, hence it will 
+                            // be unnecessary to keep the restriction record in the database
+            db_delete('book_access')
+            ->condition('nid', $node->nid)
+            ->execute();
+        }
+}
+
+/**
+ * Implements hook_node_access().
+ * 
+ * Forbidden not related user viewing the book.
+ */
+function book_restriction_node_access($node, $op, $account) {
+    if (is_string($node)) {
+        return NODE_ACCESS_IGNORE;
+    }
+/*
+    // supposed to act when deleting the node, but not for #1 administrator since he will always bypass this hook(never be called), see hook_node_access() for more information.
+    if($node->type == 'book' && $op == 'delete'){
+        if (get_top_level_page_id_for_paticular_book_page($node->nid) == $node->nid){// This condition will meet if you are deleting a top level page of a book 
+                                                                                     // since which will cause the whole book structure dismissed, then it will 
+                                                                                     // be unnecessary to keep the restriction record in the database
+            book_restriction_node_delete($node);
+        }
+    }
+*/
+    // only check book node access permission.Delete this condition can expand the management scope of this module to all the types of node.
+    if($op == 'view' && $node->type == 'book'){
+        $result1 = get_restricted_book_list();
+        $result2 = get_current_user_allowed_book_list();
+        $isRestricted = FALSE;
+        $isAllowed = FALSE; 
+        if(!empty($result1) && $result1 != NULL && $result1->rowCount() != 0){
+            foreach($result1 as $restricted_book_id){
+                if($restricted_book_id->nid == get_top_level_page_id_for_paticular_book_page($node->nid))
+                        $isRestricted = TRUE;
+            }
+        }
+        if(!empty($result2) && $result2 != NULL && $result2->rowCount() != 0){
+            foreach($result2 as $allowed_book_id){
+                if($allowed_book_id->bid == get_top_level_page_id_for_paticular_book_page($node->nid))
+                        $isAllowed = TRUE;
+            }
+        }
+        if(!$isRestricted){// always be very careful when granting NODE_ACCESS_ALLOW, in this case as to get access permission is only for viewing
+            return NODE_ACCESS_ALLOW;
+        }
+        if($isRestricted && $isAllowed){
+            return NODE_ACCESS_ALLOW;
+        }else if($isRestricted && !$isAllowed){
+            return NODE_ACCESS_DENY;
+        }
+    }
+}
+
+function get_project_id_name_pair_list(){
+    $sql = 'SELECT nid, title FROM {node} n WHERE n.type = :type AND n.status = :status ORDER BY n.nid DESC';
+    $result = db_query($sql,
+        array(
+          ':type' => 'project',
+          ':status' => 0,
+        )
+      );
+    $options = array();
+    foreach($result as $record)
+    {
+        $options[$record->nid] = t($record->title);
+
+     }
+     return $options;
+}
+
+function get_project_id_for_particular_restricted_book($book_id){
+      $project_id = NULL;
+      $query = db_select('book_access', 'a');
+      $query
+      ->condition('a.nid', $book_id, '=')
+      ->fields('a', array('pid'));
+      $result = $query->execute();
+      foreach($result as $id){
+          $project_id = $id->pid;
+      }
+      return $project_id;
+}
+
+function get_top_level_page_id_for_paticular_book_page($book_page_id){
+    $top_level_page_id = NULL;  
+    $query = db_select('book', 'b');
+      $query
+      ->condition('b.nid', $book_page_id, '=')
+      ->fields('b', array('bid'));
+      $result = $query->execute();
+      foreach($result as $id){
+          $top_level_page_id = $id->bid;
+      }
+      return $top_level_page_id;
+}
+
+function get_restricted_book_list(){
+    $query = db_select('book_access', 'a');
+    $query
+    ->fields('a', array('nid'));
+    $result = $query->execute();
+
+    return $result;
+}
+
+// Query for the progress report id which are allowed to be viewed by current user.
+function get_current_user_allowed_book_list(){
+  global $user;
+  // In case an anonymour user is logging.
+  if (empty($user->name)){
+      return NULL;
+  }
+  // Query 1 get current user owned project ID
+  $query = db_select('field_data_project_related_user', 'u');
+  $query
+  ->condition('u.project_related_user_value', $user->name, '=')
+  ->fields('u', array('entity_id'));
+  $result = $query->execute();
+  $entity_id = $result->fetchCol();
+
+  $result2 = NULL;
+  $nid = NULL;
+  if($result->rowCount() != 0){
+      // Query 2 based on query 1, search for the book id with certain restriction for a particular project.
+      $query2 = db_select('book_access', 'a');
+      $query2
+      ->condition('a.pid', $entity_id, 'IN')
+      ->fields('a', array('nid'));
+      $result2 = $query2->execute();
+      $nid = $result2->fetchCol();
+  }
+  
+  $result3 = NULL;
+  if($result2 != NULL && $result2->rowCount() != 0){
+      // Query 2 based on query 1, search for the top-level page id which can be the indicator of a certain book.
+      $query3 = db_select('book', 'b');
+      $query3
+      ->condition('b.nid', $nid, 'IN')
+      ->fields('b', array('bid'));
+      $result3 = $query3->execute();
+  }
+  return $result3;
+}
+
+function isRestrictedBook($bookId){
+    $result = get_restricted_book_list();
+    $isRestricted = FALSE;
+    foreach($result as $restricted_book_id){
+        if ($bookId == $restricted_book_id->nid)
+            $isRestricted = TRUE;
+    }
+    return $isRestricted;
+}
+
+// restriction status style implementation
+function get_restriction_status($isRestricted = FALSE){
+    if($isRestricted){
+        return '<font color=red>Noted: This page and all the other subordinate pages of the book are restricted.</font>';// red message
+    }else{
+        return '<font color=green>No restriction. You can set restriction in Book restriction settings.</font>';// green message
+    }
+}
+
+// restriction remider style implementation
+function get_restriction_reminder($isRestricted = FALSE){
+    if($isRestricted){
+        return t('This book you selected in Book outline menu will restrict to the project above.');// gray message
+    }else{
+        return t('Before saving this form, this book you selected in Book outline menu is still restricted to the project above.');// gray message
+    }
+}

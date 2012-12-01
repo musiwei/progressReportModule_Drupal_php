@@ -1,0 +1,5 @@
+name = "Progress report file manager"
+description = "Download/upload file management for project."
+package = Advanced Elements
+dependencies[] = progress_report
+core = 7.x

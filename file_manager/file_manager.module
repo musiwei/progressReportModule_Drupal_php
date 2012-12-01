@@ -1,0 +1,215 @@
+<?php
+// $Id$
+/**
+* @file
+* Lets users view the progress report
+* Lets administrators administer related operations such as create, update and delete.
+*/
+function file_manager_menu() {
+  $items['crm/project/%/resource/view'] = array(
+    'page callback' => 'view_resource_page',
+    'page arguments' => array(2),
+    'access callback' => 'user_access',
+    'access arguments' => array('View uploaded file for certain project'),
+    'title' => 'Resource download',
+  );
+  return $items;
+}
+
+function view_resource_page($projectId){
+    $pids = _file_manager_available_project_for_current_user(); // Get the available project ID list
+    $allow = FALSE; // If it's allowed to get access as to view the progress report
+    foreach($pids as $pid){
+      if($projectId == $pid->entity_id){ // If there is one match, access permission is approved
+          $allow = TRUE;
+      }
+    }
+    global $user;
+    if(!in_array('administrator',$user ->roles)){ // if user is not the administrator role
+        if(!$allow ){ // If not approved, deny any access
+          return drupal_access_denied();
+        }
+    }
+
+    // We'll start building a renderable array that will be our page.
+    // For now we just declare the array.
+    $renderable_array = array();
+    // We query the database and find all of the published nodes for the type and specified project ID we defined.
+    $sql = 'SELECT nid, title FROM {node} n JOIN {field_data_resource_pid} f ON n.nid = f.entity_id WHERE n.type = :type AND n.status = :status AND f.resource_pid_value = :pid ORDER BY n.changed DESC';
+    $result = db_query($sql,
+    array(
+      ':pid' => $projectId,
+      ':type' => 'resource',
+      ':status' => 1,
+    )
+    );
+    // Display message if no result
+    if($result->rowCount() == 0){
+      return "<div>There is not resource record. Contact with administrator for more information.</div>";
+    }
+    // Get project name by project ID
+    $query2 = db_select('node', 'n');
+    $query2
+    ->condition('n.nid', $projectId, '=')
+    ->fields('n', array('title'));
+    $result2 = $query2->execute();
+    foreach($result2 as $record){
+      $title = $record->title;
+    }
+    $renderable_array['explanation'] = array(
+        '#markup' => t("Resource list for '" . $title . '\'. Sorted by updated time.</br></br>'),
+    );
+    // Loop through each of our progress_report nodes and instruct node_view
+    // to use our "resource_list" view.
+    $result2 = _file_manager_available_resource_for_project($projectId);
+
+    if($result2 == NULL){
+      return "<div>No resource records. Contact with administrator for more information.</div>";
+    }
+
+    foreach ($result as $row) {
+        $node = node_load($row->nid);
+        /*$fileInformation =  array(
+            '#markup' => t('<br><h1>' . $node->title . '</h1>Uploaded: '.format_date($node->changed, 'custom', "m/d/Y H:i"). ' by ' . $node->name. '<hr><br>'),
+        );*/
+
+        $renderable_array['node_list'][] = node_view($node);//field_view_field('node', $node, 'resource_file', array('label' => 'hidden'));
+        //$renderable_array['node_list'][] = $fileInformation;
+    }  
+    return $renderable_array;
+}
+
+/**
+ * Implements hook_file_download_access(). This hook is not in Drupal's hook list but you can access the API from here:
+ * http://api.drupal.org/api/drupal/modules%21file%21file.api.php/function/hook_file_download_access/7
+ * 
+ * Control download access to files.
+ */
+function file_manager_file_download_access($file_item, $entity_type, $entity) {
+  if ($entity_type == 'node') {
+    return node_access($entity, 'view');
+  }
+}
+
+/**
+ * Implements hook_node_access().
+ * 
+ * Forbidden not related user viewing the resource page.
+ */
+function file_manager_node_access($node, $op, $account) {
+    if (is_string($node)) {
+        return NODE_ACCESS_IGNORE;
+    }
+    
+    if($op == 'view' && $node->type == 'resource'){
+      $result = _file_manager_available_resource_for_current_user();
+      
+      $isAllowed = FALSE; 
+        if(!empty($result) && $result != NULL && $result->rowCount() != 0){
+            foreach($result as $available_resource_id){
+                if($node->nid == $available_resource_id->entity_id)
+                        $isAllowed = TRUE;
+            }
+        }
+        
+      if($isAllowed){
+            drupal_set_message(t('User @user requests accessing to node @nid allowed.', array('@user' => $account->name, '@nid' => $node->nid)));
+            return NODE_ACCESS_ALLOW;
+      } else
+            return NODE_ACCESS_DENY;// deny any access to resource node if user is not in the allowed list.
+  }
+} 
+
+/**
+ * Implements hook_node_prepare().
+ * 
+ * Finish the database reading as to update the form before rendering create progress report node page
+ */
+function file_manager_node_prepare($node) {
+    //print("<pre>".print_r($node,true)."</pre>");
+    if ($node->type == 'resource') {
+      $sql = 'SELECT nid, title FROM {node} n WHERE n.type = :type AND n.status = :status ORDER BY n.nid DESC';
+      $result = db_query($sql,
+        array(
+          ':type' => 'project',
+          ':status' => 0,
+        )
+      );
+     $options = array();
+     foreach($result as $record)
+     {
+        $options[$record->nid] = t($record->title);
+     }
+     $field['field_name'] = 'resource_pid';
+     $field['settings']['allowed_values'] = $options;
+     field_update_field($field);
+     
+     $field0 = field_read_field('resource_file');
+     //print("<pre>".print_r($field0[],true)."</pre>");
+  }
+}
+
+// Query for the resource id which are allowed to be viewed by current user.
+function _file_manager_available_resource_for_current_user(){
+  global $user;
+  // In case an anonymour user is logging.
+  if (!$user->uid){
+      return NULL;
+  }
+  // Query 1 get current user owned project ID
+  $query = db_select('field_data_project_related_user', 'u');
+  $query
+  ->condition('u.project_related_user_value', $user->name, '=')
+  ->fields('u', array('entity_id'));
+  $result = $query->execute();
+  $entity_id = $result->fetchCol();
+  
+  $result2 = NULL;
+  
+  if($result->rowCount() != 0){
+      // Query 2 based on query 1, search for the progress reports for the particular projects.
+      $query2 = db_select('field_data_resource_pid', 'p');
+      $query2
+      ->condition('p.resource_pid_value', $entity_id, 'IN')
+      ->fields('p', array('entity_id'));
+      $result2 = $query2->execute();
+  }
+  return $result2;
+}
+
+function _file_manager_available_resource_for_project($projectId){
+  $query = db_select('field_data_resource_pid', 'p');
+  $query
+  ->condition('p.resource_pid_value', $projectId, '=')
+  ->fields('p', array('entity_id'));
+  $result = $query->execute();
+  
+  return $result;
+}
+
+// Query for the project id which are allowed to be viewed by current user.
+function _file_manager_available_project_for_current_user(){
+  global $user;
+  // Query 1 get current user owned project ID
+  $query = db_select('field_data_project_related_user', 'u');
+  $query
+  ->condition('u.project_related_user_value', $user->name, '=')
+  ->fields('u', array('entity_id'));
+  $result = $query->execute();
+  
+  return $result;
+}
+
+/**
+ * Implements hook_node_permission().
+ * 
+ * @return type 
+ */
+function file_manager_permission() {
+  return array(
+    'View uploaded file for certain project' => array(
+      'title' => t('View uploaded file for certain project.'), 
+      'restrict access' => TRUE,
+    ),
+  );
+}

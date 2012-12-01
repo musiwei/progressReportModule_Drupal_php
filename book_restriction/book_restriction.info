@@ -1,0 +1,6 @@
+name = "Progress report book restriction"
+description = "Book access management for project."
+package = Advanced Elements
+dependencies[] = book
+dependencies[] = progress_report
+core = 7.x

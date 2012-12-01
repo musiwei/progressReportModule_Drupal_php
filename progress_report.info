@@ -1,0 +1,4 @@
+name = "Progress report"
+description = "my first drupal module"
+package = Advanced Elements
+core = 7.x
